@@ -55,20 +55,20 @@ export OPENAI_API_KEY="your_key_here"
 DEBUG=1 ./run.sh
 ```
 
-### Anthropic Claude (via curator)
+### Anthropic Claude 
 
 This uses the `curator` backend inside evalchemy.
 
 ```sh
 export ANTHROPIC_API_KEY="your_key_here"
-PROVIDER=anthropic-curator MODEL="your_claude_model_id" ./run.sh
+PROVIDER=anthropic-direct MODEL="your_claude_model_id" ./run.sh
 ```
 
 Smoke test:
 
 ```sh
 export ANTHROPIC_API_KEY="your_key_here"
-PROVIDER=anthropic-curator MODEL="your_claude_model_id" DEBUG=1 ./run.sh
+PROVIDER=anthropic-direct MODEL="your_claude_model_id" DEBUG=1 ./run.sh
 ```
 
 ## Configuration
@@ -92,6 +92,10 @@ You can override behavior using environment variables.
 * `PLATFORM`
   Docker platform (useful on Apple Silicon).
   Default: `linux/amd64`
+
+* `MULTIPLE_LANGUAGES`
+  List of languages to run test MultiPL-E benchmark.
+  Default: `java`
 
 ### Provider selection
 

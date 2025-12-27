@@ -8,6 +8,13 @@ from lm_eval.models.api_models import TemplateAPI
 from lm_eval.models.utils import handle_stop_sequences
 from lm_eval.utils import eval_logger
 
+def _double_max_tokens(model_name: str, max_tokens: int, factor: int = 2) -> int:
+    """
+    Some OpenAI chat-completions models require the `max_tokens` parameter to be doubled.
+    """
+    m = model_name.lower()
+    if "o1" in m or "o3" in m or "o4" in m:
+        return max_tokens * factor
 
 def _model_disallows_stop(model_name: str) -> bool:
     """
@@ -21,7 +28,7 @@ def _model_disallows_stop(model_name: str) -> bool:
     # Known families that often disallow stop on chat-completions:
     # - o1 (already handled originally)
     # - GPT-5 family (gpt-5, gpt-5.1, gpt-5.2, chat-latest variants, etc.)
-    if "o1" in m:
+    if "o1" in m or "o3" in m or "o4" in m:
         return True
     if m.startswith("gpt-5"):
         return True
@@ -31,6 +38,20 @@ def _model_disallows_stop(model_name: str) -> bool:
     # If you later find other families disallow `stop`, add them here.
     return False
 
+
+def _model_disaalows_temperature(model_name: str) -> bool:
+    """
+    Some OpenAI chat-completions models reject the `temperature` parameter.
+    We defensively disable `temperature` for those models to avoid 400 errors.
+    """
+    if not model_name:
+        return False
+    m = model_name.lower()
+    if "o1" in m or "o3" in m or "o4" in m:
+        return True
+    if "gpt-5" in m:
+        return True
+    return False
 
 @register_model("local-completions")
 class LocalCompletionsAPI(TemplateAPI):
@@ -335,6 +356,11 @@ class OpenAIChatCompletion(LocalChatCompletion):
         # GPT-5 family (and any other models we mark as disallowing stop):
         if _model_disallows_stop(self.model):
             output.pop("stop", None)
+            
+        if _model_disaalows_temperature(self.model):
+            output["temperature"] = 1.0
+            
+        output["max_completion_tokens"] = _double_max_tokens(self.model, output["max_completion_tokens"])
 
         return output
 
