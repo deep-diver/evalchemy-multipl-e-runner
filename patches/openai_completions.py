@@ -8,6 +8,36 @@ from lm_eval.models.api_models import TemplateAPI
 from lm_eval.models.utils import handle_stop_sequences
 from lm_eval.utils import eval_logger
 
+def _is_openrouter(base_url: str) -> bool:
+    return "openrouter.ai" in (base_url or "").lower()
+
+def _normalize_max_tokens(gen_kwargs: dict) -> dict:
+    """
+    MultiPL-E / some tasks pass max_new_tokens.
+    lm-eval API models expect max_gen_toks or max_tokens.
+    Normalize here so all backends behave consistently.
+    """
+    if gen_kwargs is None:
+        return {}
+    gen_kwargs = dict(gen_kwargs)
+
+    # Prefer explicit max_tokens/max_gen_toks if already present.
+    if "max_new_tokens" in gen_kwargs and "max_tokens" not in gen_kwargs and "max_gen_toks" not in gen_kwargs:
+        gen_kwargs["max_gen_toks"] = gen_kwargs.pop("max_new_tokens")
+
+    return gen_kwargs
+
+def _model_reasoning_effort(model_name: str) -> bool:
+    """
+    Some OpenAI chat-completions models require the `reasoning_effort` parameter.
+    """
+    if not model_name:
+        return False
+    m = model_name.lower()
+    if "o1" in m or "o3" in m or "o4" in m or "gpt-5" in m:
+        return True
+    return False
+
 def _double_max_tokens(model_name: str, max_tokens: int, factor: int = 2) -> int:
     """
     Some OpenAI chat-completions models require the `max_tokens` parameter to be doubled.
@@ -15,6 +45,11 @@ def _double_max_tokens(model_name: str, max_tokens: int, factor: int = 2) -> int
     m = model_name.lower()
     if "o1" in m or "o3" in m or "o4" in m:
         return max_tokens * factor
+    
+    if "gpt-5" in m:
+        return max_tokens * factor
+    
+    return max_tokens
 
 def _model_disallows_stop(model_name: str) -> bool:
     """
@@ -75,6 +110,10 @@ class LocalCompletionsAPI(TemplateAPI):
         **kwargs,
     ) -> dict:
         gen_kwargs = {} if gen_kwargs is None else dict(gen_kwargs)
+        # gen_kwargs = _normalize_max_tokens(gen_kwargs)
+        # print("--------------------------------")
+        # print(gen_kwargs)
+        # print("--------------------------------")
 
         if generate:
             gen_kwargs.pop("do_sample", False)
@@ -184,13 +223,17 @@ class LocalChatCompletion(LocalCompletionsAPI):
             type(messages) is not str
         ), "chat-completions require the --apply_chat_template flag."
 
-        gen_kwargs = {} if gen_kwargs is None else dict(gen_kwargs)
+        # gen_kwargs = {} if gen_kwargs is None else dict(gen_kwargs)
+        gen_kwargs = _normalize_max_tokens(gen_kwargs)
+        # print("--------------------------------")
+        # print(gen_kwargs)
+        # print("--------------------------------")
 
         gen_kwargs.pop("do_sample", False)
-        if "max_tokens" in gen_kwargs:
-            max_tokens = gen_kwargs.pop("max_tokens")
-        else:
-            max_tokens = gen_kwargs.pop("max_gen_toks", self._max_gen_toks)
+        # if "max_tokens" in gen_kwargs:
+        #     max_tokens = gen_kwargs.pop("max_tokens")
+        # else:
+        #     max_tokens = gen_kwargs.pop("max_gen_toks", self._max_gen_toks)
         temperature = gen_kwargs.pop("temperature", 0)
         stop = handle_stop_sequences(gen_kwargs.pop("until", None), eos)
         if not isinstance(stop, (list, tuple)):
@@ -198,7 +241,7 @@ class LocalChatCompletion(LocalCompletionsAPI):
         return {
             "messages": messages,
             "model": self.model,
-            "max_tokens": max_tokens,
+            # "max_tokens": max_tokens,
             "temperature": temperature,
             "stop": stop[:4],
             "seed": seed,
@@ -347,6 +390,10 @@ class OpenAIChatCompletion(LocalChatCompletion):
             **gen_kwargs,
         }
 
+        # # 4) IMPORTANT: openrouter prefers max_tokens key
+        # if "max_new_tokens" in gen_kwargs and "max_tokens" not in gen_kwargs and "max_gen_toks" not in gen_kwargs:
+        #     gen_kwargs["max_gen_toks"] = gen_kwargs.pop("max_new_tokens")
+
         # o1: original behavior
         if "o1" in self.model.lower():
             output.pop("stop", None)
@@ -358,7 +405,11 @@ class OpenAIChatCompletion(LocalChatCompletion):
             output.pop("stop", None)
             
         if _model_disaalows_temperature(self.model):
-            output["temperature"] = 1.0
+            # output["temperature"] = 1.0
+            output.pop("temperature", None)
+        
+        # if _model_reasoning_effort(self.model):
+        #     output["reasoning_effort"] = "high"
             
         output["max_completion_tokens"] = _double_max_tokens(self.model, output["max_completion_tokens"])
 

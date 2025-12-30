@@ -160,8 +160,8 @@ def process_humaneval_test(sample, problems, example_test=False, is_mbpp=False, 
         test_string = test_set_up + "\n" + code + "\n" + test
     elif language == "java":
         num_open_brackets = code.count("{") - code.count("}")
-        # if num_open_brackets < 0:
-        #     code = code[:num_open_brackets]
+        if num_open_brackets < 0:
+            code = code[:num_open_brackets]
         test_string = code + "\n" + test
     elif language == "cs":
         test_set_up = ""

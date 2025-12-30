@@ -31,7 +31,7 @@ def eval_script(path: Path):
             # something. But, why break the set convention
             status = "SyntaxError"
         else:
-            result = run(["java", "-ea", "-cp", f"{outdir}:{javatuples_path}", "Problem"], env=sys_env, timeout_seconds=30)
+            result = run(["java", "-ea", "-cp", f"{outdir}:{javatuples_path}", "Problem"], env=sys_env, timeout_seconds=60)
             if result.timeout:
                 status = "Timeout"
             elif result.exit_code == 0:

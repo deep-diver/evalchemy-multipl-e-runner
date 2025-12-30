@@ -6,7 +6,6 @@ set -euo pipefail
 #   PROVIDER=openai            : OpenAI via lm-eval openai-chat-completions (patched)
 #   PROVIDER=anthropic-direct  : Anthropic via lm-eval anthropic-chat-completions (patched)
 #   PROVIDER=anthropic-curator : Anthropic via curator/LiteLLM (may remap model ids)
-#   PROVIDER=openrouter        : OpenRouter(OpenAI-compatible; Gemini etc.) via local-chat-completions
 # ============================================================================
 PROVIDER="${PROVIDER:-openai}"
 
@@ -19,7 +18,6 @@ NUM_CONCURRENT="${NUM_CONCURRENT:-4}"
 PLATFORM="${PLATFORM:-linux/amd64}"
 MODEL="${MODEL:-gpt-5.2}"
 BATCH_SIZE="${BATCH_SIZE:-1}"
-TIMEOUT="${TIMEOUT:-300}"
 
 # If set on the host, it will be forwarded into the container.
 # Example: export MULTIPLE_LANGUAGES="java,python,rs"
@@ -33,7 +31,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PATCH_OPENAI="${ROOT}/patches/openai_completions.py"
 PATCH_ANTHROPIC="${ROOT}/patches/anthropic_completions.py"
 
-# Optional runtime language override
+# Python auto-import hook to patch LANUGUAGES at runtime (no code changes in MultiPLE)
 PATCH_SITECUSTOMIZE="${ROOT}/patches/sitecustomize.py"
 
 JAVATUPLES="${ROOT}/deps/javatuples-1.2.jar"
@@ -71,11 +69,8 @@ fi
 # ============================================================================
 MODEL_BACKEND=""
 MODEL_ARGS=""
+TIMEOUT="${TIMEOUT:-300}"
 EXTRA_DOCKER_ARGS=()
-
-# OpenRouter defaults (OpenAI-compatible)
-# Docs: base URL + auth are OpenAI-style. :contentReference[oaicite:2]{index=2}
-OPENROUTER_BASE_URL="${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}"
 
 case "${PROVIDER}" in
   openai)
@@ -100,7 +95,7 @@ case "${PROVIDER}" in
 
   anthropic-direct)
     MODEL_BACKEND="anthropic-chat-completions"
-    MODEL_ARGS="model=${MODEL},num_concurrent=${NUM_CONCURRENT},timeout=${TIMEOUT}"
+    MODEL_ARGS="model=${MODEL},num_concurrent=${NUM_CONCURRENT}"
 
     if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
       echo "ERROR: ANTHROPIC_API_KEY is not set"
@@ -136,42 +131,21 @@ case "${PROVIDER}" in
     )
     ;;
 
-  openrouter)
-    # OpenRouter is OpenAI-compatible.
-    # - Base URL: https://openrouter.ai/api/v1 (or docs may show openrouter.co/v1). :contentReference[oaicite:3]{index=3}
-    # - Auth header: Authorization: Bearer <key>. :contentReference[oaicite:4]{index=4}
-    MODEL_BACKEND="local-chat-completions"
-    MODEL_ARGS="model=${MODEL},base_url=${OPENROUTER_BASE_URL}/chat/completions,num_concurrent=${NUM_CONCURRENT},timeout=${TIMEOUT}"
-
-    if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
-      echo "ERROR: OPENROUTER_API_KEY is not set"
-      exit 1
-    fi
-
-    # lm_eval's local-* backends read OPENAI_API_KEY, so we map OpenRouter key into OPENAI_API_KEY.
-    export OPENAI_API_KEY="${OPENROUTER_API_KEY}"
-
-    # Optional attribution headers exist on OpenRouter side, but we only forward envs for now. :contentReference[oaicite:5]{index=5}
-    EXTRA_DOCKER_ARGS+=(
-      -e OPENAI_API_KEY
-      -e OPENROUTER_API_KEY
-      -e OPENROUTER_BASE_URL
-      -e OPENROUTER_SITE_URL
-      -e OPENROUTER_APP_NAME
-      -e PYTHONPYCACHEPREFIX=/tmp/pycache
-      -v "${PATCH_OPENAI}:${DEST_OPENAI}:ro"
-    )
-    ;;
-
   *)
     echo "ERROR: unknown PROVIDER='${PROVIDER}'"
-    echo "       Allowed: openai | anthropic-direct | anthropic-curator | openrouter"
+    echo "       Allowed: openai | anthropic-direct | anthropic-curator"
     exit 1
     ;;
 esac
 
 # ============================================================================
-# Optional runtime language override via sitecustomize.py
+# Optional runtime language override via sitecustomize.py (no MultiPLE code changes)
+#
+# How it works:
+# - Python automatically imports `sitecustomize` if it is importable on PYTHONPATH.
+# - We mount `patches/sitecustomize.py` into /workspace/patches
+# - We add /workspace/patches to PYTHONPATH
+# - sitecustomize reads env var MULTIPLE_LANGUAGES and patches MultiPLE.LANUGUAGES
 # ============================================================================
 if [[ -n "${MULTIPLE_LANGUAGES}" ]]; then
   EXTRA_DOCKER_ARGS+=(
@@ -185,6 +159,7 @@ fi
 # Build docker args (array-safe)
 # ============================================================================
 DOCKER_ARGS=(
+  # --rm
   -it
   --platform "${PLATFORM}"
 
@@ -212,8 +187,8 @@ EVAL_ARGS=(
   --output_path /app/logs
 )
 
-# Apply chat template for chat backends
-if [[ "${PROVIDER}" == "openai" || "${PROVIDER}" == "anthropic-direct" || "${PROVIDER}" == "openrouter" ]]; then
+# Apply chat template for known chat backends
+if [[ "${PROVIDER}" == "openai" || "${PROVIDER}" == "anthropic-direct" ]]; then
   EVAL_ARGS+=(--apply_chat_template)
 fi
 
@@ -235,9 +210,6 @@ echo "[config] PLATFORM=${PLATFORM}"
 echo "[config] HOST_MULTIPLE_DIR=${HOST_MULTIPLE_DIR}"
 echo "[config] BATCH_SIZE=${BATCH_SIZE}"
 echo "[config] TIMEOUT=${TIMEOUT}"
-if [[ "${PROVIDER}" == "openrouter" ]]; then
-  echo "[config] OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL}"
-fi
 if [[ -n "${MULTIPLE_LANGUAGES}" ]]; then
   echo "[config] MULTIPLE_LANGUAGES=${MULTIPLE_LANGUAGES}"
 fi
