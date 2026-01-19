@@ -253,6 +253,11 @@ case "${PROVIDER}" in
     MODEL_BACKEND="local-completions"
     MODEL_ARGS="model=${MODEL},base_url=${VLLM_BASE_URL}/v1/completions,num_concurrent=${NUM_CONCURRENT},timeout=${TIMEOUT},max_gen_toks=4096,max_length=4096"
 
+    # Add chat_template_kwargs for Qwen3 models (thinking mode)
+    if [[ "${MODEL}" == *"Qwen3"* ]]; then
+      MODEL_ARGS="${MODEL_ARGS},chat_template_kwargs={\"enable_thinking\":true}"
+    fi
+
     export OPENAI_API_KEY="${VLLM_API_KEY:-dummy-key}"
 
     EXTRA_DOCKER_ARGS+=(
@@ -269,6 +274,11 @@ case "${PROVIDER}" in
     VLLM_BASE_URL="${VLLM_BASE_URL:-http://localhost:8000}"
     MODEL_BACKEND="openai-chat-completions"
     MODEL_ARGS="model=${MODEL},base_url=${VLLM_BASE_URL}/v1/chat/completions,num_concurrent=${NUM_CONCURRENT},timeout=${TIMEOUT},max_gen_toks=4096,max_length=4096"
+
+    # Add chat_template_kwargs for Qwen3 models (thinking mode)
+    if [[ "${MODEL}" == *"Qwen3"* ]]; then
+      MODEL_ARGS="${MODEL_ARGS},chat_template_kwargs={\"enable_thinking\":true}"
+    fi
 
     export OPENAI_API_KEY="${VLLM_API_KEY:-dummy-key}"
 
