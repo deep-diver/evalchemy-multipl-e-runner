@@ -171,14 +171,20 @@ class LocalCompletionsAPI(TemplateAPI):
 
     @staticmethod
     def parse_generations(outputs: Union[Dict, List[Dict]], **kwargs) -> List[str]:
+        from lm_eval.models.eval_logger import eval_logger
         res = []
         if not isinstance(outputs, list):
             outputs = [outputs]
         for out in outputs:
             tmp = [None] * len(out["choices"])
             for choices in out["choices"]:
-                tmp[choices["index"]] = choices["text"]
+                text = choices["text"]
+                tmp[choices["index"]] = text
+                eval_logger.info(f"[PARSE-DEBUG] Extracted text length: {len(text)}, has_code_block: {'```' in text}")
+                if len(text) > 0:
+                    eval_logger.info(f"[PARSE-DEBUG] First 200 chars: {text[:200]}")
             res = res + tmp
+        eval_logger.info(f"[PARSE-DEBUG] Total parsed outputs: {len(res)}")
         return res
 
     @property
@@ -204,6 +210,9 @@ class LocalChatCompletion(LocalCompletionsAPI):
             tokenized_requests=tokenized_requests,
             **kwargs,
         )
+        # Chat completions API doesn't support true batching (multiple requests in one API call)
+        # batch_size here controls how many requests are grouped into one async task
+        # Keep it at 1 for compatibility, but note that rate limiting affects performance
         if self._batch_size > 1:
             eval_logger.warning(
                 "Chat completions does not support batching. Defaulting to batch size 1."
@@ -223,40 +232,83 @@ class LocalChatCompletion(LocalCompletionsAPI):
             type(messages) is not str
         ), "chat-completions require the --apply_chat_template flag."
 
-        # gen_kwargs = {} if gen_kwargs is None else dict(gen_kwargs)
         gen_kwargs = _normalize_max_tokens(gen_kwargs)
-        # print("--------------------------------")
-        # print(gen_kwargs)
-        # print("--------------------------------")
 
         gen_kwargs.pop("do_sample", False)
-        # if "max_tokens" in gen_kwargs:
-        #     max_tokens = gen_kwargs.pop("max_tokens")
-        # else:
-        #     max_tokens = gen_kwargs.pop("max_gen_toks", self._max_gen_toks)
+
+        # Extract max_tokens or max_gen_toks and convert to max_tokens
+        if "max_tokens" in gen_kwargs:
+            max_tokens = gen_kwargs.pop("max_tokens")
+            # Cap max_tokens to avoid exceeding model context length
+            # Most models have 32k-128k context; use conservative value
+            if max_tokens > 8192:
+                eval_logger.info(f"[PAYLOAD-DEBUG] Capping max_tokens from {max_tokens} to 8192 to avoid exceeding context length")
+                max_tokens = 8192
+        else:
+            max_tokens = gen_kwargs.pop("max_gen_toks", self._max_gen_toks)
+
         temperature = gen_kwargs.pop("temperature", 0)
         stop = handle_stop_sequences(gen_kwargs.pop("until", None), eos)
         if not isinstance(stop, (list, tuple)):
             stop = [stop]
-        return {
+
+        # Gemini OpenAI-compatible endpoint doesn't accept seed and max_gen_toks
+        is_gemini = self.base_url and "generativelanguage.googleapis.com" in self.base_url
+
+        # Filter out unsupported parameters for Gemini
+        if is_gemini:
+            gen_kwargs.pop("max_gen_toks", None)
+            gen_kwargs.pop("max_tokens", None)
+
+        out = {
             "messages": messages,
             "model": self.model,
-            # "max_tokens": max_tokens,
+            "max_tokens": max_tokens,
             "temperature": temperature,
-            "stop": stop[:4],
-            "seed": seed,
             **gen_kwargs,
         }
 
+        # Only add stop if non-empty
+        if stop and any(s for s in stop[:4] if s):
+            out["stop"] = stop[:4]
+
+        # Only add seed for non-Gemini endpoints
+        if not is_gemini:
+            out["seed"] = seed
+
+        return out
+
     @staticmethod
     def parse_generations(outputs: Union[Dict, List[Dict]], **kwargs) -> List[str]:
+        from lm_eval.utils import eval_logger
+
         res = []
         if not isinstance(outputs, list):
             outputs = [outputs]
         for out in outputs:
             tmp = [None] * len(out["choices"])
             for choices in out["choices"]:
-                tmp[choices["index"]] = choices["message"]["content"]
+                try:
+                    # Try standard OpenAI format
+                    tmp[choices["index"]] = choices["message"]["content"]
+                except (KeyError, TypeError) as e:
+                    # Handle edge cases: Gemini might have different format
+                    eval_logger.warning(f"Unexpected response format: {choices}. Error: {e}")
+                    # Try to extract content from alternative formats
+                    content = None
+                    if isinstance(choices, dict):
+                        # Try direct content field
+                        content = choices.get("content")
+                        # Try text field
+                        if content is None:
+                            content = choices.get("text")
+                        # Try nested message
+                        if content is None and "message" in choices:
+                            msg = choices["message"]
+                            if isinstance(msg, dict):
+                                content = msg.get("content") or msg.get("text")
+                    # Fallback to string representation
+                    tmp[choices["index"]] = content if content is not None else str(choices)
             res = res + tmp
         return res
 
@@ -369,11 +421,26 @@ class OpenAIChatCompletion(LocalChatCompletion):
 
         gen_kwargs = {} if gen_kwargs is None else dict(gen_kwargs)
 
+        # Debug: log incoming gen_kwargs
+        eval_logger.info(f"[PAYLOAD-DEBUG] Incoming gen_kwargs keys: {list(gen_kwargs.keys())}, max_tokens={gen_kwargs.get('max_tokens', 'N/A')}, max_gen_toks={gen_kwargs.get('max_gen_toks', 'N/A')}, max_new_tokens={gen_kwargs.get('max_new_tokens', 'N/A')}")
+
         gen_kwargs.pop("do_sample", False)
         if "max_tokens" in gen_kwargs:
             max_tokens = gen_kwargs.pop("max_tokens")
+            # Cap max_tokens to avoid exceeding model context length
+            # Most models have 32k-128k context; use conservative value
+            if max_tokens > 8192:
+                eval_logger.info(f"[PAYLOAD-DEBUG] Capping max_tokens from {max_tokens} to 8192 to avoid exceeding context length")
+                max_tokens = 8192
+            eval_logger.info(f"[PAYLOAD-DEBUG] Using max_tokens from gen_kwargs: {max_tokens}")
         else:
-            max_tokens = gen_kwargs.pop("max_gen_toks", self._max_gen_toks)
+            max_tokens_from_kwargs = gen_kwargs.pop("max_gen_toks", None)
+            if max_tokens_from_kwargs is not None:
+                max_tokens = max_tokens_from_kwargs
+                eval_logger.info(f"[PAYLOAD-DEBUG] Using max_gen_toks from gen_kwargs: {max_tokens}")
+            else:
+                max_tokens = self._max_gen_toks
+                eval_logger.info(f"[PAYLOAD-DEBUG] Using default self._max_gen_toks: {max_tokens}")
         temperature = gen_kwargs.pop("temperature", 0)
         stop = handle_stop_sequences(gen_kwargs.pop("until", ["<|endoftext|>"]), eos)
         if not isinstance(stop, (list, tuple)):
@@ -410,8 +477,11 @@ class OpenAIChatCompletion(LocalChatCompletion):
         
         # if _model_reasoning_effort(self.model):
         #     output["reasoning_effort"] = "high"
-            
+
+        original_max_tokens = output["max_completion_tokens"]
         output["max_completion_tokens"] = _double_max_tokens(self.model, output["max_completion_tokens"])
+        if output["max_completion_tokens"] != original_max_tokens:
+            eval_logger.info(f"[PAYLOAD-DEBUG] Doubled max_tokens: {original_max_tokens} -> {output['max_completion_tokens']}")
 
         return output
 

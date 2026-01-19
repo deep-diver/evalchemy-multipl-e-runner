@@ -5,4 +5,5 @@ __pycache__/
 .DS_Store
 .env
 GI
-
+gcp-ml-172005-4509c1c5babb.json
+*.log

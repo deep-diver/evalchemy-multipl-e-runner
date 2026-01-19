@@ -1,0 +1,10 @@
+--- eval.py.orig
++++ eval.py
+@@ -254,6 +254,7 @@
+                     random_seed=args.seed[0] if hasattr(args, "seed") else None,
+                     numpy_random_seed=args.seed[1] if hasattr(args, "seed") else None,
+                     torch_random_seed=args.seed[2] if hasattr(args, "seed") else None,
+                     fewshot_random_seed=args.seed[3] if hasattr(args, "seed") else None,
++                    confirm_run_unsafe_code=getattr(args, "confirm_run_unsafe_code", False),
+                 )
+                 if pretrain_results is not None:

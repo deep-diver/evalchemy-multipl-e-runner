@@ -7,6 +7,10 @@ set -euo pipefail
 #   PROVIDER=anthropic-direct  : Anthropic via lm-eval anthropic-chat-completions (patched)
 #   PROVIDER=anthropic-curator : Anthropic via curator/LiteLLM (may remap model ids)
 #   PROVIDER=openrouter        : OpenRouter(OpenAI-compatible; Gemini etc.) via local-chat-completions
+#   PROVIDER=google-direct     : Google via lm-eval google-chat-completions (patched)
+#   PROVIDER=vllm              : vLLM completions API (for pretrain tasks like humaneval)
+#   PROVIDER=vllm-chat         : vLLM chat completions API (for instruct tasks like CodeElo)
+#   PROVIDER=vertex-direct     : Vertex AI via patched vertex_completions
 # ============================================================================
 PROVIDER="${PROVIDER:-openai}"
 
@@ -32,6 +36,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PATCH_OPENAI="${ROOT}/patches/openai_completions.py"
 PATCH_ANTHROPIC="${ROOT}/patches/anthropic_completions.py"
+PATCH_GOOGLE="${ROOT}/patches/google_completions.py"
+PATCH_MODELS_INIT="${ROOT}/patches/__init__.py"
+PATCH_EVAL="${ROOT}/patches/eval.py"
 
 # Optional runtime language override
 PATCH_SITECUSTOMIZE="${ROOT}/patches/sitecustomize.py"
@@ -42,6 +49,8 @@ HOST_MULTIPLE_DIR="${HOST_MULTIPLE_DIR:-${ROOT}/multipl}"
 
 DEST_OPENAI="${DEST_OPENAI:-/usr/local/lib/python3.10/dist-packages/lm_eval/models/openai_completions.py}"
 DEST_ANTHROPIC="${DEST_ANTHROPIC:-/usr/local/lib/python3.10/dist-packages/lm_eval/models/anthropic_llms.py}"
+DEST_GOOGLE="${DEST_GOOGLE:-/usr/local/lib/python3.10/dist-packages/lm_eval/models/google_completions.py}"
+DEST_MODELS_INIT="${DEST_MODELS_INIT:-/usr/local/lib/python3.10/dist-packages/lm_eval/models/__init__.py}"
 
 # ============================================================================
 # Pre-flight checks (common)
@@ -163,9 +172,123 @@ case "${PROVIDER}" in
     )
     ;;
 
+  google-direct)
+    # Use Gemini's OpenAI-compatible endpoint
+    # https://ai.google.dev/gemini-api/docs/openai
+    # Note: lm-eval posts directly to base_url, so we need the full path
+    MODEL_BACKEND="local-chat-completions"
+    MODEL_ARGS="model=${MODEL},base_url=https://generativelanguage.googleapis.com/v1beta/openai/chat/completions,num_concurrent=${NUM_CONCURRENT},timeout=${TIMEOUT}"
+
+    if [[ -z "${GOOGLE_API_KEY:-}" ]]; then
+      if [[ -z "${GEMINI_API_KEY:-}" ]]; then
+        echo "ERROR: GOOGLE_API_KEY or GEMINI_API_KEY is not set"
+        exit 1
+      fi
+    fi
+
+    # local-chat-completions reads OPENAI_API_KEY, so we map Google key to it
+    export OPENAI_API_KEY="${GOOGLE_API_KEY:-${GEMINI_API_KEY}}"
+
+    EXTRA_DOCKER_ARGS+=(
+      -e OPENAI_API_KEY
+      -e GOOGLE_API_KEY
+      -e GEMINI_API_KEY
+      -e PYTHONPYCACHEPREFIX=/tmp/pycache
+      -v "${PATCH_OPENAI}:${DEST_OPENAI}:ro"
+    )
+    ;;
+
+  vertex-direct)
+    # Use Vertex AI endpoint (better performance and rate limits)
+    # Requires Google Cloud credentials (gcloud auth application-default login)
+    # https://cloud.google.com/vertex-ai/generative-ai/docs/sdks/overview
+    MODEL_BACKEND="vertex-chat-completions"
+    MODEL_ARGS="model=${MODEL},num_concurrent=${NUM_CONCURRENT},timeout=${TIMEOUT},max_gen_toks=65536,max_length=32768"
+
+    # Optional: Set project and location
+    if [[ -n "${GOOGLE_CLOUD_PROJECT:-}" ]]; then
+      MODEL_ARGS="${MODEL_ARGS},project=${GOOGLE_CLOUD_PROJECT}"
+    fi
+    if [[ -n "${GOOGLE_CLOUD_LOCATION:-}" ]]; then
+      MODEL_ARGS="${MODEL_ARGS},location=${GOOGLE_CLOUD_LOCATION}"
+    fi
+
+    # Mount vertex_completions.py patch and use wrapper script
+    PATCH_VERTEX="${ROOT}/patches/vertex_completions.py"
+    DEST_VERTEX="/usr/local/lib/python3.10/dist-packages/lm_eval/models/vertex_completions.py"
+    WRAPPER_SCRIPT="${ROOT}/patches/run_with_vertex.py"
+    DEST_WRAPPER="/app/run_with_vertex.py"
+
+    # Handle service account credentials file
+    # Mount to a separate location outside of /root/.config/gcloud to avoid conflicts
+    if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]]; then
+      # Get the filename from the path
+      CREDS_FILENAME="$(basename "${GOOGLE_APPLICATION_CREDENTIALS}")"
+      DEST_CREDS="/app/gcp-credentials/${CREDS_FILENAME}"
+      EXTRA_DOCKER_ARGS+=(
+        -v "${GOOGLE_APPLICATION_CREDENTIALS}:${DEST_CREDS}:ro"
+        -e GOOGLE_APPLICATION_CREDENTIALS="${DEST_CREDS}"
+      )
+    fi
+
+    EXTRA_DOCKER_ARGS+=(
+      -e GOOGLE_CLOUD_PROJECT
+      -e GOOGLE_CLOUD_LOCATION
+      # Mount gcloud config for ADC
+      -v "/Users/deep-diver/.config/gcloud:/root/.config/gcloud:ro"
+      -v "${PATCH_VERTEX}:${DEST_VERTEX}:ro"
+      -v "${WRAPPER_SCRIPT}:${DEST_WRAPPER}:ro"
+      -v "${PATCH_OPENAI}:${DEST_OPENAI}:ro"
+      -e PYTHONPYCACHEPREFIX=/tmp/pycache
+      -e PYTHONDONTWRITEBYTECODE=1
+    )
+    ;;
+
+  vllm)
+    # vLLM provides OpenAI-compatible API (completions endpoint)
+    # https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html
+    # Set VLLM_BASE_URL to your vLLM endpoint (e.g., http://localhost:8000)
+    # Use this for pretrain tasks like humaneval, mbpp, etc.
+    VLLM_BASE_URL="${VLLM_BASE_URL:-http://localhost:8000}"
+    MODEL_BACKEND="local-completions"
+    MODEL_ARGS="model=${MODEL},base_url=${VLLM_BASE_URL}/v1/completions,num_concurrent=${NUM_CONCURRENT},timeout=${TIMEOUT},max_gen_toks=4096,max_length=4096"
+
+    export OPENAI_API_KEY="${VLLM_API_KEY:-dummy-key}"
+
+    EXTRA_DOCKER_ARGS+=(
+      -e OPENAI_API_KEY
+      -e VLLM_API_KEY
+      -e VLLM_BASE_URL
+      -e PYTHONPYCACHEPREFIX=/tmp/pycache
+    )
+    ;;
+
+  vllm-chat)
+    # vLLM provides OpenAI-compatible API (chat completions endpoint)
+    # Use this for instruct/chat tasks like CodeElo, MultiPLE, etc.
+    VLLM_BASE_URL="${VLLM_BASE_URL:-http://localhost:8000}"
+    MODEL_BACKEND="openai-chat-completions"
+    MODEL_ARGS="model=${MODEL},base_url=${VLLM_BASE_URL}/v1/chat/completions,num_concurrent=${NUM_CONCURRENT},timeout=${TIMEOUT},max_gen_toks=4096,max_length=4096"
+
+    export OPENAI_API_KEY="${VLLM_API_KEY:-dummy-key}"
+
+    if [[ ! -f "${PATCH_OPENAI}" ]]; then
+      echo "ERROR: missing patch file: ${PATCH_OPENAI}"
+      exit 1
+    fi
+
+    EXTRA_DOCKER_ARGS+=(
+      -e OPENAI_API_KEY
+      -e VLLM_API_KEY
+      -e VLLM_BASE_URL
+      -e PYTHONPYCACHEPREFIX=/tmp/pycache
+      -v "${PATCH_OPENAI}:${DEST_OPENAI}:ro"
+    )
+    ;;
+
   *)
     echo "ERROR: unknown PROVIDER='${PROVIDER}'"
-    echo "       Allowed: openai | anthropic-direct | anthropic-curator | openrouter"
+    echo "       Allowed: openai | anthropic-direct | anthropic-curator | openrouter | google-direct | vertex-direct | vllm | vllm-chat"
     exit 1
     ;;
 esac
@@ -185,7 +308,6 @@ fi
 # Build docker args (array-safe)
 # ============================================================================
 DOCKER_ARGS=(
-  -it
   --platform "${PLATFORM}"
 
   # Override the MultiPLE benchmark code inside the container
@@ -196,6 +318,13 @@ DOCKER_ARGS=(
 
   # Provide Java dependency at hardcoded location expected by MultiPL-E
   -v "${JAVATUPLES}:/usr/multiple/javatuples-1.2.jar:ro"
+
+  # Patch eval.py to add confirm_run_unsafe_code parameter
+  -v "${PATCH_EVAL}:/workspace/evalchemy/eval/eval.py:ro"
+
+  # Allow code execution for HumanEval and other code benchmarks
+  -e HF_ALLOW_CODE_EVAL="${HF_ALLOW_CODE_EVAL:-1}"
+  -e CONFIRM_RUN_UNSAFE_CODE="${CONFIRM_RUN_UNSAFE_CODE:-True}"
 )
 
 DOCKER_ARGS+=("${EXTRA_DOCKER_ARGS[@]}")
@@ -203,17 +332,29 @@ DOCKER_ARGS+=("${EXTRA_DOCKER_ARGS[@]}")
 # ============================================================================
 # Build eval args
 # ============================================================================
-EVAL_ARGS=(
-  python3 -m eval.eval
-  --model "${MODEL_BACKEND}"
-  --tasks "${TASKS}"
-  --model_args "${MODEL_ARGS}"
-  --batch_size "${BATCH_SIZE}"
-  --output_path /app/logs
-)
+if [[ "${PROVIDER}" == "vertex-direct" ]]; then
+  # Use wrapper script for vertex-direct to load vertex_completions module
+  EVAL_ARGS=(
+    python3 /app/run_with_vertex.py
+    --model "${MODEL_BACKEND}"
+    --tasks "${TASKS}"
+    --model_args "${MODEL_ARGS}"
+    --batch_size "${BATCH_SIZE}"
+    --output_path /app/logs
+  )
+else
+  EVAL_ARGS=(
+    python3 -m eval.eval
+    --model "${MODEL_BACKEND}"
+    --tasks "${TASKS}"
+    --model_args "${MODEL_ARGS}"
+    --batch_size "${BATCH_SIZE}"
+    --output_path /app/logs
+  )
+fi
 
 # Apply chat template for chat backends
-if [[ "${PROVIDER}" == "openai" || "${PROVIDER}" == "anthropic-direct" || "${PROVIDER}" == "openrouter" ]]; then
+if [[ "${PROVIDER}" == "openai" || "${PROVIDER}" == "anthropic-direct" || "${PROVIDER}" == "openrouter" || "${PROVIDER}" == "google-direct" || "${PROVIDER}" == "vertex-direct" || "${PROVIDER}" == "vllm-chat" ]]; then
   EVAL_ARGS+=(--apply_chat_template)
 fi
 
@@ -221,6 +362,9 @@ fi
 if [[ -n "${DEBUG:-}" ]]; then
   EVAL_ARGS+=(--debug)
 fi
+
+# Allow unsafe code execution for HumanEval and other code benchmarks
+EVAL_ARGS+=(--confirm_run_unsafe_code)
 
 # ============================================================================
 # Print effective config
