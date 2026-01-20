@@ -424,6 +424,17 @@ class OpenAIChatCompletion(LocalChatCompletion):
         # Debug: log incoming gen_kwargs
         eval_logger.info(f"[PAYLOAD-DEBUG] Incoming gen_kwargs keys: {list(gen_kwargs.keys())}, max_tokens={gen_kwargs.get('max_tokens', 'N/A')}, max_gen_toks={gen_kwargs.get('max_gen_toks', 'N/A')}, max_new_tokens={gen_kwargs.get('max_new_tokens', 'N/A')}")
 
+        # For Qwen3 models on vLLM, ensure chat_template_kwargs is set to disable thinking by default
+        # Qwen3 has thinking mode enabled by default, which outputs </think> tags
+        # If chat_template_kwargs is not explicitly set, disable thinking mode
+        is_vllm = self.base_url and ("localhost" in self.base_url or "129.254" in self.base_url or "vllm" in self.base_url.lower())
+        is_qwen3 = "qwen3" in self.model.lower()
+
+        if is_vllm and is_qwen3 and "chat_template_kwargs" not in gen_kwargs:
+            # Explicitly disable thinking mode for Qwen3 by default
+            gen_kwargs["chat_template_kwargs"] = {"enable_thinking": False}
+            eval_logger.info(f"[PAYLOAD-DEBUG] Auto-setting chat_template_kwargs={{'enable_thinking': False}} for Qwen3 model")
+
         gen_kwargs.pop("do_sample", False)
         if "max_tokens" in gen_kwargs:
             max_tokens = gen_kwargs.pop("max_tokens")

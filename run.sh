@@ -253,11 +253,6 @@ case "${PROVIDER}" in
     MODEL_BACKEND="local-completions"
     MODEL_ARGS="model=${MODEL},base_url=${VLLM_BASE_URL}/v1/completions,num_concurrent=${NUM_CONCURRENT},timeout=${TIMEOUT},max_gen_toks=4096,max_length=4096"
 
-    # Add chat_template_kwargs for Qwen3 models (thinking mode)
-    if [[ "${MODEL}" == *"Qwen3"* ]]; then
-      MODEL_ARGS="${MODEL_ARGS},chat_template_kwargs={\"enable_thinking\":true}"
-    fi
-
     export OPENAI_API_KEY="${VLLM_API_KEY:-dummy-key}"
 
     EXTRA_DOCKER_ARGS+=(
@@ -275,9 +270,24 @@ case "${PROVIDER}" in
     MODEL_BACKEND="openai-chat-completions"
     MODEL_ARGS="model=${MODEL},base_url=${VLLM_BASE_URL}/v1/chat/completions,num_concurrent=${NUM_CONCURRENT},timeout=${TIMEOUT},max_gen_toks=4096,max_length=4096"
 
-    # Add chat_template_kwargs for Qwen3 models (thinking mode)
+    # Qwen3-specific generation parameters
+    # Note: Thinking mode is automatically disabled in the Python patch for Qwen3 models
+    # To enable thinking mode, you would need to modify the patch or use server-level config
     if [[ "${MODEL}" == *"Qwen3"* ]]; then
-      MODEL_ARGS="${MODEL_ARGS},chat_template_kwargs={\"enable_thinking\":true}"
+      # Temperature (controlled by VLLM_TEMPERATURE)
+      if [[ -n "${VLLM_TEMPERATURE:-}" ]]; then
+        MODEL_ARGS="${MODEL_ARGS},temperature=${VLLM_TEMPERATURE}"
+      fi
+
+      # Top-p (controlled by VLLM_TOP_P)
+      if [[ -n "${VLLM_TOP_P:-}" ]]; then
+        MODEL_ARGS="${MODEL_ARGS},top_p=${VLLM_TOP_P}"
+      fi
+
+      # Top-k (controlled by VLLM_TOP_K)
+      if [[ -n "${VLLM_TOP_K:-}" ]]; then
+        MODEL_ARGS="${MODEL_ARGS},top_k=${VLLM_TOP_K}"
+      fi
     fi
 
     export OPENAI_API_KEY="${VLLM_API_KEY:-dummy-key}"
@@ -285,6 +295,15 @@ case "${PROVIDER}" in
     if [[ ! -f "${PATCH_OPENAI}" ]]; then
       echo "ERROR: missing patch file: ${PATCH_OPENAI}"
       exit 1
+    fi
+
+    # Pass Qwen3 environment variables into container if set
+    if [[ "${MODEL}" == *"Qwen3"* ]]; then
+      EXTRA_DOCKER_ARGS+=(
+        -e VLLM_TEMPERATURE
+        -e VLLM_TOP_P
+        -e VLLM_TOP_K
+      )
     fi
 
     EXTRA_DOCKER_ARGS+=(
