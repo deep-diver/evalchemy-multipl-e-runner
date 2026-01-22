@@ -30,7 +30,6 @@ from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # register
 from eval.constants import LIST_OPENAI_MODELS
 from eval.eval_tracker import DCEvaluationTracker
 from eval.task import TaskManager as InstructTaskManager
-from patches.result_tracker import ResultTracker
 
 
 _BIT_CAP = 15_000
@@ -193,6 +192,9 @@ def evaluate(
 
     # Initialize progressive result tracker if not provided
     if result_tracker is None and args and args.output_path:
+        # Import ResultTracker here to avoid module-level import issues
+        from patches.result_tracker import ResultTracker
+
         # Extract provider from model_args (e.g., "openai-chat-completions" from model registry)
         provider = getattr(args, 'model', 'unknown')
         # Get multiple_languages if set
