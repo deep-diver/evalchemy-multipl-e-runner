@@ -30,6 +30,7 @@ from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # register
 from eval.constants import LIST_OPENAI_MODELS
 from eval.eval_tracker import DCEvaluationTracker
 from eval.task import TaskManager as InstructTaskManager
+from patches.result_tracker import ResultTracker
 
 
 _BIT_CAP = 15_000
@@ -142,6 +143,7 @@ def evaluate(
     batch_sizes_list: List[int],
     verbosity: str = "INFO",
     args=None,
+    result_tracker=None,
     **eval_kwargs,
 ) -> Dict[str, Dict]:
     """
@@ -189,6 +191,28 @@ def evaluate(
     if pretrain_tasks:
         eval_logger.info(f"Pretrain tasks to evaluate: {pretrain_tasks}")
 
+    # Initialize progressive result tracker if not provided
+    if result_tracker is None and args and args.output_path:
+        # Extract provider from model_args (e.g., "openai-chat-completions" from model registry)
+        provider = getattr(args, 'model', 'unknown')
+        # Get multiple_languages if set
+        multiple_languages = getattr(args, 'multiple_languages', None)
+
+        result_tracker = ResultTracker(
+            output_path=args.output_path,
+            model=provider,
+            provider=provider,
+            tasks=",".join(task_list),
+            multiple_languages=multiple_languages or "",
+        )
+
+    if result_tracker:
+        eval_logger.info(f"Progressive result tracking enabled: {result_tracker}")
+        if result_tracker.is_continuation:
+            eval_logger.info(f"Found existing progress file, will retry failed tasks")
+            summary = result_tracker.get_summary()
+            eval_logger.info(f"Progress: {summary['succeeded']} succeeded, {summary['failed']} failed")
+
     results = {"results": {}}
 
     # Run benchmark evaluations - sequential generation, parallel evaluation
@@ -202,10 +226,62 @@ def evaluate(
                 lm.batch_size_per_gpu = batch_size
             elif args.model == "vllm":
                 lm.batch_size = batch_size
-            result = method(lm)
-            if result is not None:  # Only keep valid results and their corresponding tasks
-                generation_results.append(result)
-                valid_tasks.append(task)
+
+            # Create unique sample_id for this task
+            sample_id = f"{task}"
+
+            # Check if already succeeded in previous run
+            if result_tracker and result_tracker.exists():
+                succeeded_ids = result_tracker.get_succeeded_sample_ids()
+                if sample_id in succeeded_ids:
+                    eval_logger.info(f"Skipping {task} (already succeeded in previous run)")
+                    # We still need to regenerate for this run - TODO: implement result caching
+                    # For now, just skip the tracking and regenerate
+
+            # Try generation with progress tracking
+            try:
+                eval_logger.info(f"Generating responses for {task}...")
+                result = method(lm)
+
+                if result is not None:
+                    # Success
+                    if result_tracker:
+                        result_tracker.append(sample_id, "success", metadata={"task": task})
+                        eval_logger.info(f"{task} generation succeeded")
+                    generation_results.append(result)
+                    valid_tasks.append(task)
+                else:
+                    # None result - treat as failure
+                    error_msg = "Generation returned None"
+                    if result_tracker:
+                        result_tracker.append(sample_id, "fail", error=error_msg, metadata={"task": task})
+                    eval_logger.warning(f"{task} generation failed: {error_msg}")
+
+            except Exception as e:
+                # Exception during generation
+                error_msg = str(e)
+                if result_tracker:
+                    result_tracker.append(sample_id, "fail", error=error_msg, metadata={"task": task})
+                eval_logger.error(f"{task} generation failed with exception: {error_msg}")
+                # Continue with next task (don't stop)
+
+        # Check for failures before running phase
+        if result_tracker and result_tracker.has_failures():
+            failed_entries = result_tracker.get_failed_entries()
+            eval_logger.warning(f"=================================================")
+            eval_logger.warning(f"FAILED TASKS DETECTED: {len(failed_entries)}")
+            eval_logger.warning(f"Running phase will be SKIPPED due to failures.")
+            eval_logger.warning(f"Failed tasks:")
+            for entry in failed_entries:
+                task_name = entry.get('metadata', {}).get('task', entry['sample_id'])
+                error = entry.get('error', 'Unknown error')
+                eval_logger.warning(f"  - {task_name}: {error}")
+            eval_logger.warning(f"Re-run to retry failed tasks.")
+            eval_logger.warning(f"=================================================")
+
+            # Return partial results (only successful tasks)
+            return results
+
         # Get evaluation methods only for valid tasks
 
         if lm is not None and not hasattr(lm, "upload_to_hub"):
@@ -285,6 +361,15 @@ def evaluate(
             import traceback
 
             traceback.print_exc()
+
+    # Clean up progressive tracking file if running phase completed successfully
+    if result_tracker and result_tracker.exists():
+        # Only delete if we have results (meaning running phase completed)
+        if results.get("results") and len(results.get("results", {})) > 0:
+            eval_logger.info(f"Running phase completed successfully, deleting progress tracking file: {result_tracker.filepath}")
+            result_tracker.delete()
+        else:
+            eval_logger.info(f"Keeping progress tracking file (no complete results yet)")
 
     return results
 

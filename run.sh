@@ -328,8 +328,6 @@ esac
 if [[ -n "${MULTIPLE_LANGUAGES}" ]]; then
   EXTRA_DOCKER_ARGS+=(
     -e MULTIPLE_LANGUAGES
-    -e PYTHONPATH="/workspace/patches:${PYTHONPATH:-}"
-    -v "${ROOT}/patches:/workspace/patches:ro"
   )
 fi
 
@@ -350,6 +348,10 @@ DOCKER_ARGS=(
 
   # Patch eval.py to add confirm_run_unsafe_code parameter
   -v "${PATCH_EVAL}:/workspace/evalchemy/eval/eval.py:ro"
+
+  # Mount patches directory for progressive result tracking and other utilities
+  -v "${ROOT}/patches:/workspace/patches:ro"
+  -e PYTHONPATH="/workspace/patches:${PYTHONPATH:-}"
 
   # Allow code execution for HumanEval and other code benchmarks
   -e HF_ALLOW_CODE_EVAL="${HF_ALLOW_CODE_EVAL:-1}"
