@@ -193,7 +193,11 @@ def evaluate(
     # Initialize progressive result tracker if not provided
     if result_tracker is None and args and args.output_path:
         # Import ResultTracker here to avoid module-level import issues
-        from patches.result_tracker import ResultTracker
+        # Add patches to sys.path to ensure it's importable
+        import sys
+        if '/workspace/patches' not in sys.path:
+            sys.path.insert(0, '/workspace/patches')
+        from result_tracker import ResultTracker
 
         # Extract provider from model_args (e.g., "openai-chat-completions" from model registry)
         provider = getattr(args, 'model', 'unknown')
