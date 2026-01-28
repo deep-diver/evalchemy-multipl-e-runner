@@ -34,20 +34,28 @@ class ResultTracker:
         self.provider = provider
         self.tasks = tasks
 
-        # Generate unique filename components
+        # Generate unique filename components (without timestamp)
         model_safe = self._sanitize_for_filename(model)
         self.extra_params = "_".join([f"{k}_{v}" for k, v in sorted(kwargs.items()) if v])
 
-        # Create filename
-        timestamp = int(time.time())
-        filename_parts = [f"progress", model_safe, provider, tasks, self.extra_params, str(timestamp)]
-        filename = "_".join([p for p in filename_parts if p]) + ".jsonl"
+        # Create base filename pattern (without timestamp for reuse)
+        filename_base_parts = [f"progress", model_safe, provider, tasks, self.extra_params]
+        filename_base = "_".join([p for p in filename_base_parts if p])
 
-        self.filepath = self.output_path / filename
+        # First, try to find existing progress file for this configuration
+        existing_files = list(self.output_path.glob(f"{filename_base}_*.jsonl"))
+        if existing_files:
+            # Use the most recent existing file
+            self.filepath = max(existing_files, key=lambda f: f.stat().st_mtime)
+            self.is_continuation = True
+        else:
+            # Create new file with timestamp
+            timestamp = int(time.time())
+            filename = f"{filename_base}_{timestamp}.jsonl"
+            self.filepath = self.output_path / filename
+            self.is_continuation = False
+
         self.filepath.parent.mkdir(parents=True, exist_ok=True)
-
-        # Track if file exists (continuation or new run)
-        self.is_continuation = self.filepath.exists()
 
     @staticmethod
     def _sanitize_for_filename(name: str) -> str:

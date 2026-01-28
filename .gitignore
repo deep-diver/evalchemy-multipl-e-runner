@@ -7,3 +7,8 @@ __pycache__/
 GI
 gcp-ml-172005-4509c1c5babb.json
 *.log
+
+# Dataset and progressive tracking data
+mbpp_data/
+multiple_data/
+.patched/

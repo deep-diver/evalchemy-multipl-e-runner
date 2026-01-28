@@ -29,6 +29,9 @@ TIMEOUT="${TIMEOUT:-300}"
 # Example: export MULTIPLE_LANGUAGES="java,python,rs"
 MULTIPLE_LANGUAGES="${MULTIPLE_LANGUAGES:-}"
 
+# If REPLACE=true, clear existing progress files and start fresh
+REPLACE="${REPLACE:-false}"
+
 # ============================================================================
 # Repo-relative paths
 # ============================================================================
@@ -340,6 +343,18 @@ DOCKER_ARGS=(
   # Override the MultiPLE benchmark code inside the container
   -v "${HOST_MULTIPLE_DIR}:/workspace/evalchemy/eval/chat_benchmarks/MultiPLE"
 
+  # Patch MBPP eval_instruct.py for better deepseek-r1 thinking response handling
+  -v "${ROOT}/patches/mbpp_eval_instruct.py:/workspace/evalchemy/eval/chat_benchmarks/MBPP/eval_instruct.py:ro"
+
+  # Patch MultiPLE eval_instruct.py for progressive tracking
+  -v "${ROOT}/patches/multiple_eval_instruct.py:/workspace/evalchemy/eval/chat_benchmarks/MultiPLE/eval_instruct.py:ro"
+
+  # Mount MBPP data directory to persist progressive results across runs
+  -v "${ROOT}/mbpp_data:/workspace/evalchemy/eval/chat_benchmarks/MBPP/data"
+
+  # Mount MultiPLE data directory to persist progressive results across runs
+  -v "${ROOT}/multiple_data:/workspace/evalchemy/eval/chat_benchmarks/MultiPLE/data"
+
   # Persist logs/results on the host
   -v "${LOGS}:/app/logs"
 
@@ -356,6 +371,15 @@ DOCKER_ARGS=(
   # Allow code execution for HumanEval and other code benchmarks
   -e HF_ALLOW_CODE_EVAL="${HF_ALLOW_CODE_EVAL:-1}"
   -e CONFIRM_RUN_UNSAFE_CODE="${CONFIRM_RUN_UNSAFE_CODE:-True}"
+
+  # Support for LIMIT environment variable to restrict number of samples
+  ${LIMIT:+-e LIMIT="${LIMIT}"}
+
+  # Support for NUM_CONCURRENT for batch processing
+  -e NUM_CONCURRENT="${NUM_CONCURRENT}"
+
+  # Support for REPLACE to clear existing progress and start fresh
+  -e REPLACE="${REPLACE}"
 )
 
 DOCKER_ARGS+=("${EXTRA_DOCKER_ARGS[@]}")
@@ -397,6 +421,11 @@ fi
 # Allow unsafe code execution for HumanEval and other code benchmarks
 EVAL_ARGS+=(--confirm_run_unsafe_code)
 
+# Limit number of samples if specified
+if [[ -n "${LIMIT:-}" ]]; then
+  EVAL_ARGS+=(--limit "${LIMIT}")
+fi
+
 # ============================================================================
 # Print effective config
 # ============================================================================
@@ -410,6 +439,9 @@ echo "[config] PLATFORM=${PLATFORM}"
 echo "[config] HOST_MULTIPLE_DIR=${HOST_MULTIPLE_DIR}"
 echo "[config] BATCH_SIZE=${BATCH_SIZE}"
 echo "[config] TIMEOUT=${TIMEOUT}"
+if [[ -n "${LIMIT:-}" ]]; then
+  echo "[config] LIMIT=${LIMIT}"
+fi
 if [[ "${PROVIDER}" == "openrouter" ]]; then
   echo "[config] OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL}"
 fi

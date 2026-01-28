@@ -6,6 +6,7 @@ import os
 import sys
 import time
 import math
+import signal
 from typing import Dict, List, Optional, Union
 
 import lm_eval.api.metrics
@@ -199,14 +200,27 @@ def evaluate(
             sys.path.insert(0, '/workspace/patches')
         from result_tracker import ResultTracker
 
-        # Extract provider from model_args (e.g., "openai-chat-completions" from model registry)
+        # Extract provider (backend name) and model name from model_args
         provider = getattr(args, 'model', 'unknown')
+
+        # Parse model_args to get actual model name (e.g., "deepseek/deepseek-r1")
+        model_name = provider  # fallback to provider if model not in args
+        if args.model_args:
+            try:
+                args_dict = simple_parse_args_string(args.model_args)
+                if 'model' in args_dict:
+                    model_name = args_dict['model']
+                elif 'pretrained' in args_dict:
+                    model_name = args_dict['pretrained']
+            except Exception:
+                pass  # Use provider as fallback
+
         # Get multiple_languages if set
         multiple_languages = getattr(args, 'multiple_languages', None)
 
         result_tracker = ResultTracker(
             output_path=args.output_path,
-            model=provider,
+            model=model_name,
             provider=provider,
             tasks=",".join(task_list),
             multiple_languages=multiple_languages or "",
@@ -218,6 +232,22 @@ def evaluate(
             eval_logger.info(f"Found existing progress file, will retry failed tasks")
             summary = result_tracker.get_summary()
             eval_logger.info(f"Progress: {summary['succeeded']} succeeded, {summary['failed']} failed")
+
+        # Set up signal handler for graceful shutdown on Ctrl+C
+        def signal_handler(signum, frame):
+            eval_logger.warning(f"=================================================")
+            eval_logger.warning(f"Received interrupt signal ({signum}), shutting down gracefully...")
+            if result_tracker and result_tracker.exists():
+                summary = result_tracker.get_summary()
+                eval_logger.warning(f"Progress saved: {summary['succeeded']} succeeded, {summary['failed']} failed")
+                eval_logger.warning(f"Progress file: {result_tracker.filepath}")
+                eval_logger.warning(f"Re-run to continue from where we left off.")
+            eval_logger.warning(f"=================================================")
+            sys.exit(130)  # Standard exit code for SIGINT
+
+        signal.signal(signal.SIGINT, signal_handler)
+        if hasattr(signal, 'SIGTERM'):
+            signal.signal(signal.SIGTERM, signal_handler)
 
     results = {"results": {}}
 
@@ -247,15 +277,56 @@ def evaluate(
             # Try generation with progress tracking
             try:
                 eval_logger.info(f"Generating responses for {task}...")
-                result = method(lm)
+                # Try to pass result_tracker if the method supports it (for per-sample tracking)
+                try:
+                    import inspect
+                    sig = inspect.signature(method)
+                    if 'result_tracker' in sig.parameters:
+                        result = method(lm, result_tracker=result_tracker)
+                        eval_logger.info(f"Using per-sample tracking for {task}")
+                    else:
+                        result = method(lm)
+                except Exception as e:
+                    # Fallback if passing result_tracker fails
+                    eval_logger.warning(f"Failed to pass result_tracker to {task}, using standard call: {e}")
+                    result = method(lm)
 
+                # Validate the result - check if generation actually succeeded
+                # MultiPLE tasks return a dict with temp_dir_obj, but may have failed internally
                 if result is not None:
-                    # Success
-                    if result_tracker:
-                        result_tracker.append(sample_id, "success", metadata={"task": task})
-                        eval_logger.info(f"{task} generation succeeded")
-                    generation_results.append(result)
-                    valid_tasks.append(task)
+                    is_valid = True
+                    error_msg = None
+
+                    # For MultiPLE tasks, check if generated files exist
+                    if isinstance(result, dict) and "temp_dir_obj" in result:
+                        temp_dir_obj = result.get("temp_dir_obj")
+                        if temp_dir_obj is not None:
+                            import os
+                            temp_dir = temp_dir_obj.name
+                            # Check if any generated_*.jsonl files exist
+                            has_generated_files = False
+                            if os.path.exists(temp_dir):
+                                for filename in os.listdir(temp_dir):
+                                    if filename.startswith("generated_") and filename.endswith(".jsonl"):
+                                        has_generated_files = True
+                                        break
+
+                            if not has_generated_files:
+                                is_valid = False
+                                error_msg = "Generation failed: no generated files produced (likely API failure)"
+
+                    if is_valid:
+                        # Success
+                        if result_tracker:
+                            result_tracker.append(sample_id, "success", metadata={"task": task})
+                            eval_logger.info(f"{task} generation succeeded")
+                        generation_results.append(result)
+                        valid_tasks.append(task)
+                    else:
+                        # Invalid result (e.g., no generated files)
+                        if result_tracker:
+                            result_tracker.append(sample_id, "fail", error=error_msg, metadata={"task": task})
+                        eval_logger.warning(f"{task} generation failed: {error_msg}")
                 else:
                     # None result - treat as failure
                     error_msg = "Generation returned None"
@@ -274,19 +345,50 @@ def evaluate(
         # Check for failures before running phase
         if result_tracker and result_tracker.has_failures():
             failed_entries = result_tracker.get_failed_entries()
-            eval_logger.warning(f"=================================================")
-            eval_logger.warning(f"FAILED TASKS DETECTED: {len(failed_entries)}")
-            eval_logger.warning(f"Running phase will be SKIPPED due to failures.")
-            eval_logger.warning(f"Failed tasks:")
-            for entry in failed_entries:
-                task_name = entry.get('metadata', {}).get('task', entry['sample_id'])
-                error = entry.get('error', 'Unknown error')
-                eval_logger.warning(f"  - {task_name}: {error}")
-            eval_logger.warning(f"Re-run to retry failed tasks.")
-            eval_logger.warning(f"=================================================")
+            succeeded_entries = result_tracker.get_succeeded_entries()
 
-            # Return partial results (only successful tasks)
-            return results
+            # Check if we have per-sample failures (mbpp_sample type) vs task-level failures
+            sample_failures = [e for e in failed_entries if e.get('metadata', {}).get('type') in ('mbpp_sample', 'sample')]
+            task_failures = [e for e in failed_entries if e not in sample_failures]
+
+            if task_failures:
+                # Task-level failures - skip running phase
+                eval_logger.warning(f"=================================================")
+                eval_logger.warning(f"TASK-LEVEL FAILURES DETECTED: {len(task_failures)}")
+                eval_logger.warning(f"Running phase will be SKIPPED due to task failures.")
+                eval_logger.warning(f"Failed tasks:")
+                for entry in task_failures:
+                    task_name = entry.get('metadata', {}).get('task', entry['sample_id'])
+                    error = entry.get('error', 'Unknown error')
+                    eval_logger.warning(f"  - {task_name}: {error}")
+                eval_logger.warning(f"Re-run to retry failed tasks.")
+                eval_logger.warning(f"=================================================")
+
+                # Return partial results (only successful tasks)
+                return results
+            elif sample_failures:
+                # Per-sample failures - log but continue with running phase
+                eval_logger.warning(f"=================================================")
+                eval_logger.warning(f"PER-SAMPLE FAILURES DETECTED: {len(sample_failures)} samples failed")
+                eval_logger.warning(f"Succeeded samples: {len(succeeded_entries)}, Failed samples: {len(sample_failures)}")
+                eval_logger.warning(f"Running phase will proceed with succeeded samples only.")
+                eval_logger.warning(f"Re-run to retry failed samples.")
+                eval_logger.warning(f"=================================================")
+            else:
+                # Unknown failures
+                eval_logger.warning(f"=================================================")
+                eval_logger.warning(f"FAILED TASKS DETECTED: {len(failed_entries)}")
+                eval_logger.warning(f"Running phase will be SKIPPED due to failures.")
+                eval_logger.warning(f"Failed tasks:")
+                for entry in failed_entries:
+                    task_name = entry.get('metadata', {}).get('task', entry['sample_id'])
+                    error = entry.get('error', 'Unknown error')
+                    eval_logger.warning(f"  - {task_name}: {error}")
+                eval_logger.warning(f"Re-run to retry failed tasks.")
+                eval_logger.warning(f"=================================================")
+
+                # Return partial results (only successful tasks)
+                return results
 
         # Get evaluation methods only for valid tasks
 
@@ -309,8 +411,70 @@ def evaluate(
 
     # Run pretrain evaluations if any exist
     if pretrain_tasks and args is not None:
-        try:
-            for pretrain_task, batch_size in zip(pretrain_tasks, pretrain_batch_sizes):
+        # Check if we have any previous failures for pretrain tasks
+        if result_tracker and result_tracker.exists():
+            succeeded_pretrain = [t for t in pretrain_tasks if f"pretrain_{t}" in result_tracker.get_succeeded_sample_ids()]
+            failed_pretrain = [t for t in pretrain_tasks if f"pretrain_{t}" in result_tracker.get_failed_sample_ids()]
+            if succeeded_pretrain:
+                eval_logger.info(f"Skipping {len(succeeded_pretrain)} pretrain tasks that already succeeded: {succeeded_pretrain}")
+            # Only run tasks that haven't succeeded yet
+            pretrain_tasks_to_run = [t for t in pretrain_tasks if f"pretrain_{t}" not in result_tracker.get_succeeded_sample_ids()]
+            pretrain_batch_sizes_to_run = [b for t, b in zip(pretrain_tasks, pretrain_batch_sizes) if t in pretrain_tasks_to_run]
+        else:
+            pretrain_tasks_to_run = pretrain_tasks
+            pretrain_batch_sizes_to_run = pretrain_batch_sizes
+
+        eval_logger.info(f"Pretrain tasks to run: {pretrain_tasks_to_run}")
+
+        # Track any pretrain task failures
+        pretrain_has_failures = False
+
+        for pretrain_task, batch_size in zip(pretrain_tasks_to_run, pretrain_batch_sizes_to_run):
+            sample_id = f"pretrain_{pretrain_task}"
+
+            # Check if already succeeded in previous run (double-check)
+            if result_tracker and result_tracker.exists():
+                succeeded_ids = result_tracker.get_succeeded_sample_ids()
+                if sample_id in succeeded_ids:
+                    eval_logger.info(f"Skipping {pretrain_task} (already succeeded in previous run)")
+                    # Try to load cached results
+                    try:
+                        cached_results = pretrain_evaluator.simple_evaluate(
+                            model=args.model,
+                            model_args=args.model_args,
+                            tasks=[pretrain_task],
+                            num_fewshot=args.num_fewshot,
+                            batch_size=batch_size,
+                            max_batch_size=args.max_batch_size,
+                            device=args.device,
+                            use_cache=True,  # Use cache
+                            limit=args.limit,
+                            check_integrity=args.check_integrity,
+                            write_out=False,  # Don't write out again
+                            log_samples=args.log_samples,
+                            evaluation_tracker=args.evaluation_tracker if hasattr(args, "evaluation_tracker") else None,
+                            system_instruction=args.system_instruction,
+                            apply_chat_template=args.apply_chat_template,
+                            fewshot_as_multiturn=args.fewshot_as_multiturn,
+                            gen_kwargs=args.gen_kwargs,
+                            task_manager=pretrain_task_manager,
+                            verbosity=args.verbosity,
+                            predict_only=args.predict_only,
+                            random_seed=args.seed[0] if hasattr(args, "seed") else None,
+                            numpy_random_seed=args.seed[1] if hasattr(args, "seed") else None,
+                            torch_random_seed=args.seed[2] if hasattr(args, "seed") else None,
+                            fewshot_random_seed=args.seed[3] if hasattr(args, "seed") else None,
+                            confirm_run_unsafe_code=getattr(args, "confirm_run_unsafe_code", False),
+                        )
+                        if cached_results is not None:
+                            results["results"].update(cached_results.get("results", {}))
+                        continue
+                    except Exception as e:
+                        eval_logger.warning(f"Failed to load cached results for {pretrain_task}, will regenerate: {e}")
+
+            # Run the pretrain task with progress tracking
+            try:
+                eval_logger.info(f"Running pretrain task: {pretrain_task}...")
                 pretrain_results = pretrain_evaluator.simple_evaluate(
                     model=args.model,
                     model_args=args.model_args,
@@ -338,10 +502,43 @@ def evaluate(
                     fewshot_random_seed=args.seed[3] if hasattr(args, "seed") else None,
                     confirm_run_unsafe_code=getattr(args, "confirm_run_unsafe_code", False),
                 )
-                if pretrain_results is not None:
+
+                if pretrain_results is not None and pretrain_results.get("results"):
+                    # Success
+                    if result_tracker:
+                        result_tracker.append(sample_id, "success", metadata={"task": pretrain_task, "type": "pretrain"})
                     results["results"].update(pretrain_results.get("results", {}))
-        except Exception as e:
-            eval_logger.error(f"Error in pretrain evaluation: {str(e)}")
+                    eval_logger.info(f"{pretrain_task} completed successfully")
+                else:
+                    # Failed - no results returned
+                    error_msg = "Pretrain task returned no results"
+                    if result_tracker:
+                        result_tracker.append(sample_id, "fail", error=error_msg, metadata={"task": pretrain_task, "type": "pretrain"})
+                    eval_logger.warning(f"{pretrain_task} failed: {error_msg}")
+                    pretrain_has_failures = True
+
+            except Exception as e:
+                # Exception during pretrain task
+                error_msg = str(e)
+                if result_tracker:
+                    result_tracker.append(sample_id, "fail", error=error_msg, metadata={"task": pretrain_task, "type": "pretrain"})
+                eval_logger.error(f"{pretrain_task} failed with exception: {error_msg}")
+                pretrain_has_failures = True
+
+        # Check for pretrain failures (for reporting purposes)
+        if result_tracker and result_tracker.has_failures():
+            failed_entries = result_tracker.get_failed_entries()
+            pretrain_failures = [e for e in failed_entries if e.get('metadata', {}).get('type') == 'pretrain']
+            if pretrain_failures:
+                eval_logger.warning(f"=================================================")
+                eval_logger.warning(f"PRETRAIN TASK FAILURES DETECTED: {len(pretrain_failures)}")
+                eval_logger.warning(f"Failed pretrain tasks:")
+                for entry in pretrain_failures:
+                    task_name = entry.get('metadata', {}).get('task', entry['sample_id'])
+                    error = entry.get('error', 'Unknown error')
+                    eval_logger.warning(f"  - {task_name}: {error}")
+                eval_logger.warning(f"Re-run to retry failed tasks.")
+                eval_logger.warning(f"=================================================")
 
     # If we're using UploadInstancesToHF, make sure to call upload_to_hub
     if lm is not None and hasattr(lm, "upload_to_hub") and callable(lm.upload_to_hub):
@@ -368,14 +565,19 @@ def evaluate(
 
             traceback.print_exc()
 
-    # Clean up progressive tracking file if running phase completed successfully
+    # Clean up progressive tracking file if ALL tasks completed successfully
+    # This happens at the very end after both benchmark and pretrain tasks
     if result_tracker and result_tracker.exists():
-        # Only delete if we have results (meaning running phase completed)
-        if results.get("results") and len(results.get("results", {})) > 0:
-            eval_logger.info(f"Running phase completed successfully, deleting progress tracking file: {result_tracker.filepath}")
-            result_tracker.delete()
+        if not result_tracker.has_failures():
+            # Only delete if we have results (meaning tasks completed)
+            if results.get("results") and len(results.get("results", {})) > 0:
+                eval_logger.info(f"All tasks completed successfully, deleting progress tracking file: {result_tracker.filepath}")
+                result_tracker.delete()
+            else:
+                eval_logger.info(f"Keeping progress tracking file (no complete results yet)")
         else:
-            eval_logger.info(f"Keeping progress tracking file (no complete results yet)")
+            summary = result_tracker.get_summary()
+            eval_logger.info(f"Keeping progress tracking file ({summary['failed']} failures to retry)")
 
     return results
 
