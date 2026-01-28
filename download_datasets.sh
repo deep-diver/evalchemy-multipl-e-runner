@@ -78,16 +78,22 @@ fi
 echo ""
 echo "[3/3] Downloading HumanEval datasets..."
 
-# HumanEval from OpenAI's official repository (uncompressed)
-HUMANEVAL_URL="https://raw.githubusercontent.com/openai/human-eval/master/data/HumanEval.jsonl"
+# HumanEval from OpenAI's official repository (gzipped)
+HUMANEVAL_URL="https://raw.githubusercontent.com/openai/human-eval/master/data/HumanEval.jsonl.gz"
 
-echo "  Downloading humaneval.jsonl..."
-if curl -s -L -o "humaneval_data/humaneval.jsonl" "${HUMANEVAL_URL}"; then
-    if head -c 10 "humaneval_data/humaneval.jsonl" | grep -q '{"'; then
-        echo "  ✓ Downloaded humaneval.jsonl"
+echo "  Downloading humaneval.jsonl.gz..."
+if curl -s -L -o "humaneval_data/humaneval.jsonl.gz" "${HUMANEVAL_URL}"; then
+    if gunzip -c "humaneval_data/humaneval.jsonl.gz" > "humaneval_data/humaneval.jsonl" 2>/dev/null; then
+        rm -f "humaneval_data/humaneval.jsonl.gz"
+        if head -c 10 "humaneval_data/humaneval.jsonl" | grep -q '{"'; then
+            echo "  ✓ Downloaded humaneval.jsonl"
+        else
+            echo "  ✗ humaneval.jsonl invalid"
+            rm -f "humaneval_data/humaneval.jsonl"
+        fi
     else
-        echo "  ✗ humaneval.jsonl invalid"
-        rm -f "humaneval_data/humaneval.jsonl"
+        echo "  ✗ Failed to decompress HumanEval"
+        rm -f humaneval_data/humaneval.jsonl*
     fi
 else
     echo "  ✗ Failed to download HumanEval"
