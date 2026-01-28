@@ -107,13 +107,13 @@ echo "=========================================="
 echo "Download Summary"
 echo "=========================================="
 
-multi_count=$(ls multiple_data/multipl-e-*.json 2>/dev/null | wc -l | tr -d ' ')
-mbpp_count=$(ls mbpp_data/*.jsonl 2>/dev/null | wc -l | tr -d ' ')
-humaneval_count=$(ls humaneval_data/*.jsonl 2>/dev/null | wc -l | tr -d ' ')
+multi_count=$(find multiple_data -name "multipl-e-*.json" -type f 2>/dev/null | wc -l | tr -d ' ')
+mbpp_count=$(find mbpp_data -name "*.jsonl" -type f 2>/dev/null | wc -l | tr -d ' ')
+humaneval_count=$(find humaneval_data -name "*.jsonl" -type f 2>/dev/null | wc -l | tr -d ' ')
 
-echo "MultiPL-E: ${multi_count} datasets"
-echo "MBPP:      ${mbpp_count} files"
-echo "HumanEval: ${humaneval_count} file(s)"
+echo "MultiPL-E: ${multi_count:-0} datasets"
+echo "MBPP:      ${mbpp_count:-0} files"
+echo "HumanEval: ${humaneval_count:-0} file(s)"
 
 echo ""
 echo "Dataset directories:"
