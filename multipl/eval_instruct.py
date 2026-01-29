@@ -94,7 +94,7 @@ class MultipleBenchmark(BaseBenchmark):
         self,
         languages: List[str] = LANUGUAGES,
         data_dir: str = DATA_DIR,
-        max_tokens: int = 1024,
+        max_tokens: int = None,
         num_workers: int = 10,
         timeout: float = 15,
         debug: bool = False,
@@ -106,7 +106,7 @@ class MultipleBenchmark(BaseBenchmark):
         Args:
             languages: List of programming languages to evaluate
             data_dir: Directory containing multipl-e datasets
-            max_tokens: Maximum number of tokens for generation
+            max_tokens: Maximum number of tokens for generation (default: 8192, or HUMANEVAL_MAX_TOKENS env var)
             num_workers: Number of workers for parallel evaluation
             timeout: Timeout for code execution
             debug: If True, only evaluate first 2 examples
@@ -115,7 +115,9 @@ class MultipleBenchmark(BaseBenchmark):
         super().__init__(logger)
         self.languages = languages
         self.data_dir = data_dir
-        self.max_tokens = max_tokens or 1024
+        # Use HUMANEVAL_MAX_TOKENS env var, passed max_tokens, or default to 8192
+        default_max_tokens = int(os.environ.get("HUMANEVAL_MAX_TOKENS", "8192"))
+        self.max_tokens = max_tokens or default_max_tokens
         self.num_workers = num_workers
         self.timeout = timeout
         self.debug = debug
