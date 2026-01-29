@@ -27,7 +27,7 @@ class MBPPBenchmark(BaseBenchmark):
         start_idx: int = 10,
         end_idx: int = 510,
         debug: bool = False,
-        max_tokens: int = 512,
+        max_tokens: int = None,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
     ):
@@ -36,7 +36,7 @@ class MBPPBenchmark(BaseBenchmark):
 
         Args:
             data_dir: Directory containing MBPP datasets
-            max_tokens: Maximum number of tokens for generation
+            max_tokens: Maximum number of tokens for generation (default: 8192, or MBPP_MAX_TOKENS env var)
             num_examples: Number of examples to show in few-shot prompt
             start_idx: Start index for evaluation examples
             end_idx: End index for evaluation examples
@@ -46,11 +46,14 @@ class MBPPBenchmark(BaseBenchmark):
         """
         super().__init__(logger=logger, system_instruction=system_instruction)
         self.data_dir = data_dir
-        self.max_tokens = max_tokens
+        # Use MBPP_MAX_TOKENS env var, passed max_tokens, or default to 8192
+        default_max_tokens = int(os.environ.get("MBPP_MAX_TOKENS", "8192"))
+        self.max_tokens = max_tokens or default_max_tokens
         self.num_examples = num_examples
         self.start_idx = start_idx
         self.end_idx = end_idx
         self.debug = debug
+        self.logger.info(f"[MBPP-DEBUG] max_tokens={self.max_tokens} (passed={max_tokens}, default={default_max_tokens})")
 
     def format_test_example(self, question: str, tests: List[str], code: Optional[str] = None) -> str:
         """Format a single test example."""
