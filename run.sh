@@ -153,7 +153,7 @@ case "${PROVIDER}" in
     # - Base URL: https://openrouter.ai/api/v1 (or docs may show openrouter.co/v1). :contentReference[oaicite:3]{index=3}
     # - Auth header: Authorization: Bearer <key>. :contentReference[oaicite:4]{index=4}
     MODEL_BACKEND="local-chat-completions"
-    MODEL_ARGS="model=${MODEL},base_url=${OPENROUTER_BASE_URL}/chat/completions,num_concurrent=${NUM_CONCURRENT},timeout=${TIMEOUT}"
+    MODEL_ARGS="model=${MODEL},base_url=${OPENROUTER_BASE_URL}/chat/completions,num_concurrent=${NUM_CONCURRENT},timeout=${TIMEOUT},max_gen_toks=4096,max_length=4096"
 
     if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
       echo "ERROR: OPENROUTER_API_KEY is not set"
