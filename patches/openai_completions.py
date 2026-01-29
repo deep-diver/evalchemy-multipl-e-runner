@@ -460,13 +460,19 @@ class OpenAIChatCompletion(LocalChatCompletion):
         output = {
             "messages": messages,
             "model": self.model,
-            # NOTE: keep using max_completion_tokens (your original code already does this)
-            "max_completion_tokens": max_tokens,
             "temperature": temperature,
             "stop": stop[:4],
             "seed": seed,
             **gen_kwargs,
         }
+
+        # OpenRouter prefers max_tokens over max_completion_tokens
+        is_openrouter_provider = _is_openrouter(self.base_url)
+        if is_openrouter_provider:
+            output["max_tokens"] = max_tokens
+            eval_logger.info(f"[PAYLOAD-DEBUG] Using max_tokens={max_tokens} for OpenRouter")
+        else:
+            output["max_completion_tokens"] = max_tokens
 
         # # 4) IMPORTANT: openrouter prefers max_tokens key
         # if "max_new_tokens" in gen_kwargs and "max_tokens" not in gen_kwargs and "max_gen_toks" not in gen_kwargs:
@@ -489,10 +495,17 @@ class OpenAIChatCompletion(LocalChatCompletion):
         # if _model_reasoning_effort(self.model):
         #     output["reasoning_effort"] = "high"
 
-        original_max_tokens = output["max_completion_tokens"]
-        output["max_completion_tokens"] = _double_max_tokens(self.model, output["max_completion_tokens"])
-        if output["max_completion_tokens"] != original_max_tokens:
-            eval_logger.info(f"[PAYLOAD-DEBUG] Doubled max_tokens: {original_max_tokens} -> {output['max_completion_tokens']}")
+        # Double max_tokens/max_completion_tokens for specific models (o1, gpt-5)
+        if "max_completion_tokens" in output:
+            original_max_tokens = output["max_completion_tokens"]
+            output["max_completion_tokens"] = _double_max_tokens(self.model, output["max_completion_tokens"])
+            if output["max_completion_tokens"] != original_max_tokens:
+                eval_logger.info(f"[PAYLOAD-DEBUG] Doubled max_completion_tokens: {original_max_tokens} -> {output['max_completion_tokens']}")
+        elif "max_tokens" in output:
+            original_max_tokens = output["max_tokens"]
+            output["max_tokens"] = _double_max_tokens(self.model, output["max_tokens"])
+            if output["max_tokens"] != original_max_tokens:
+                eval_logger.info(f"[PAYLOAD-DEBUG] Doubled max_tokens: {original_max_tokens} -> {output['max_tokens']}")
 
         return output
 
