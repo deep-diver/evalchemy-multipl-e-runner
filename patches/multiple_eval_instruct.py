@@ -142,16 +142,29 @@ class MultipleBenchmark(BaseBenchmark):
         ```
         """
 
-    def _get_progress_file(self) -> str:
+    def _get_progress_file(self, model_identifier: str = None) -> str:
         """
-        Get progress file path with languages in filename.
+        Get progress file path with model and languages in filename.
 
-        Format: multiple_progress_{lang1}_{lang2}_{lang3}.jsonl
-        Example: multiple_progress_java_php_python.jsonl
+        Format: multiple_progress_{model}_{lang1}_{lang2}_{lang3}.jsonl
+        Example: multiple_progress_model__deepseek__deepseek-r1__java_php.jsonl
+
+        Args:
+            model_identifier: Sanitized model identifier for unique tracking
+
+        Returns:
+            Path to the progress file
         """
         # Sort languages for consistent filename
         lang_suffix = "_".join(sorted(self.languages))
-        return os.path.join(self.data_dir, f"multiple_progress_{lang_suffix}.jsonl")
+
+        # Sanitize model identifier for filename (slashes -> double underscores)
+        if model_identifier:
+            model_safe = model_identifier.replace('/', '__').replace('\\', '__')
+            return os.path.join(self.data_dir, f"multiple_progress_{model_safe}_{lang_suffix}.jsonl")
+        else:
+            # Fallback for backwards compatibility (shouldn't happen in normal use)
+            return os.path.join(self.data_dir, f"multiple_progress_{lang_suffix}.jsonl")
 
     def generate_responses(self, model: LM) -> Dict[str, Any]:
         """
@@ -174,7 +187,13 @@ class MultipleBenchmark(BaseBenchmark):
             temp_dir_obj = tempfile.TemporaryDirectory()
             temp_dir = temp_dir_obj.name
 
-            progress_file = self._get_progress_file()
+            # Extract model identifier for unique progress tracking per model
+            # This allows multiple models to run on the same task without conflicts
+            model_identifier = getattr(model, 'model_identifier', 'unknown')
+
+            progress_file = self._get_progress_file(model_identifier)
+            # Store for cleanup in evaluate_responses
+            self._current_progress_file = progress_file
             self.logger.info(f"Progress file: {progress_file}")
 
             # Check for REPLACE flag - if true, delete existing progress and start fresh
@@ -452,9 +471,11 @@ class MultipleBenchmark(BaseBenchmark):
         temp_dir_obj.cleanup()
 
         # Clean up progress file after successful evaluation
-        progress_file = self._get_progress_file()
-        if os.path.exists(progress_file):
-            os.remove(progress_file)
-            self.logger.info(f"Deleted progress file after successful evaluation: {progress_file}")
+        # Use the stored progress file path from generate_responses
+        if hasattr(self, '_current_progress_file'):
+            progress_file = self._current_progress_file
+            if os.path.exists(progress_file):
+                os.remove(progress_file)
+                self.logger.info(f"Deleted progress file after successful evaluation: {progress_file}")
 
         return evaluation_results

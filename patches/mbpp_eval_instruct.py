@@ -188,8 +188,15 @@ Here is my problem:
             temp_dir_obj = tempfile.TemporaryDirectory()
             temp_dir = temp_dir_obj.name
 
+            # Extract model identifier for unique progress tracking per model
+            # This allows multiple models to run on the same task without conflicts
+            model_identifier = getattr(model, 'model_identifier', 'unknown')
+            # Sanitize for filename (slashes -> double underscores, like ResultTracker)
+            model_safe = model_identifier.replace('/', '__').replace('\\', '__')
+
             # Path to the progressive tracking file (data_dir for persistence)
-            progress_file = os.path.join(self.data_dir, "generated_mbpp_prev.jsonl")
+            # Now includes model name to avoid conflicts between different models
+            progress_file = os.path.join(self.data_dir, f"generated_mbpp_{model_safe}.jsonl")
 
             # Check for REPLACE flag - if true, delete existing progress and start fresh
             if os.environ.get("REPLACE", "false").lower() == "true":
