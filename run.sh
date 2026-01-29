@@ -346,6 +346,9 @@ DOCKER_ARGS=(
   # Patch MBPP eval_instruct.py for better deepseek-r1 thinking response handling
   -v "${ROOT}/patches/mbpp_eval_instruct.py:/workspace/evalchemy/eval/chat_benchmarks/MBPP/eval_instruct.py:ro"
 
+  # Patch MBPP evaluation.py to fix test_list field access
+  -v "${ROOT}/patches/mbpp_evaluation.py:/workspace/evalchemy/eval/chat_benchmarks/MBPP/human_eval/evaluation.py:ro"
+
   # Patch HumanEval eval_instruct.py to fix max_tokens default from 1024 to 8192
   -v "${ROOT}/patches/humaneval_eval_instruct.py:/workspace/evalchemy/eval/chat_benchmarks/HumanEval/eval_instruct.py:ro"
 
