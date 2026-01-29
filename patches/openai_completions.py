@@ -244,8 +244,15 @@ class LocalChatCompletion(LocalCompletionsAPI):
             if max_tokens > 8192:
                 eval_logger.info(f"[PAYLOAD-DEBUG] Capping max_tokens from {max_tokens} to 8192 to avoid exceeding context length")
                 max_tokens = 8192
+            eval_logger.info(f"[PAYLOAD-DEBUG] Using max_tokens from gen_kwargs: {max_tokens}")
         else:
-            max_tokens = gen_kwargs.pop("max_gen_toks", self._max_gen_toks)
+            max_tokens_from_kwargs = gen_kwargs.pop("max_gen_toks", None)
+            if max_tokens_from_kwargs is not None:
+                max_tokens = max_tokens_from_kwargs
+                eval_logger.info(f"[PAYLOAD-DEBUG] Using max_gen_toks from gen_kwargs: {max_tokens}")
+            else:
+                max_tokens = self._max_gen_toks
+                eval_logger.info(f"[PAYLOAD-DEBUG] Using default self._max_gen_toks: {max_tokens}")
 
         temperature = gen_kwargs.pop("temperature", 0)
         stop = handle_stop_sequences(gen_kwargs.pop("until", None), eos)
@@ -275,6 +282,11 @@ class LocalChatCompletion(LocalCompletionsAPI):
         # Only add seed for non-Gemini endpoints
         if not is_gemini:
             out["seed"] = seed
+
+        # Log final max_tokens value for debugging
+        is_openrouter = _is_openrouter(self.base_url)
+        provider = "OpenRouter" if is_openrouter else "local-chat-completions"
+        eval_logger.info(f"[PAYLOAD-DEBUG] {provider} sending max_tokens={out.get('max_tokens', 'N/A')}, model={self.model}")
 
         return out
 
