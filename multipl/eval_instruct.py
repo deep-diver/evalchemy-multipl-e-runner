@@ -118,6 +118,7 @@ class MultipleBenchmark(BaseBenchmark):
         # Use HUMANEVAL_MAX_TOKENS env var, passed max_tokens, or default to 8192
         default_max_tokens = int(os.environ.get("HUMANEVAL_MAX_TOKENS", "8192"))
         self.max_tokens = max_tokens or default_max_tokens
+        logger.info(f"[HUMANEVAL-DEBUG] max_tokens={self.max_tokens} (passed={max_tokens}, default={default_max_tokens})")
         self.num_workers = num_workers
         self.timeout = timeout
         self.debug = debug
@@ -190,6 +191,7 @@ class MultipleBenchmark(BaseBenchmark):
                             idx,
                         )
                     )
+                    self.logger.info(f"[HUMANEVAL-DEBUG] Created Instance with max_new_tokens={self.max_tokens}")
                 self.logger.info(f"Generating responses for MulltiPL-E ({lang})...")
                 outputs = self.compute(model, all_instances)
 
