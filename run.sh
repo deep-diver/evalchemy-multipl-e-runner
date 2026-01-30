@@ -25,6 +25,11 @@ MODEL="${MODEL:-gpt-5.2}"
 BATCH_SIZE="${BATCH_SIZE:-1}"
 TIMEOUT="${TIMEOUT:-300}"
 
+# Token limit configuration (override via host env vars)
+# MAX_TOKENS sets the max_tokens for all tasks (default: 8192)
+# Individual tasks can also use: HUMANEVAL_MAX_TOKENS, MBPP_MAX_TOKENS, MULTIPLE_MAX_TOKENS
+MAX_TOKENS="${MAX_TOKENS:-8192}"
+
 # If set on the host, it will be forwarded into the container.
 # Example: export MULTIPLE_LANGUAGES="java,python,rs"
 MULTIPLE_LANGUAGES="${MULTIPLE_LANGUAGES:-}"
@@ -333,6 +338,17 @@ if [[ -n "${MULTIPLE_LANGUAGES}" ]]; then
     -e MULTIPLE_LANGUAGES
   )
 fi
+
+# ============================================================================
+# Optional token limit override
+# ============================================================================
+# Pass MAX_TOKENS and individual task MAX_TOKENS to container
+EXTRA_DOCKER_ARGS+=(
+  -e MAX_TOKENS
+  -e HUMANEVAL_MAX_TOKENS
+  -e MBPP_MAX_TOKENS
+  -e MULTIPLE_MAX_TOKENS
+)
 
 # ============================================================================
 # Build docker args (array-safe)

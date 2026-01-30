@@ -45,8 +45,8 @@ class HumanEvalBenchmark(BaseBenchmark):
         super().__init__(logger=logger, system_instruction=system_instruction)
         self.languages = languages
         self.data_dir = data_dir
-        # Use HUMANEVAL_MAX_TOKENS env var, passed max_tokens, or default to 8192
-        default_max_tokens = int(os.environ.get("HUMANEVAL_MAX_TOKENS", "8192"))
+        # Use MAX_TOKENS global, HUMANEVAL_MAX_TOKENS, passed max_tokens, or default to 8192
+        default_max_tokens = int(os.environ.get("MAX_TOKENS") or os.environ.get("HUMANEVAL_MAX_TOKENS", "8192"))
         self.max_tokens = max_tokens or default_max_tokens
         self.num_workers = num_workers
         self.timeout = timeout

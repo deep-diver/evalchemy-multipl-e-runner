@@ -46,8 +46,8 @@ class MBPPBenchmark(BaseBenchmark):
         """
         super().__init__(logger=logger, system_instruction=system_instruction)
         self.data_dir = data_dir
-        # Use MBPP_MAX_TOKENS env var, passed max_tokens, or default to 8192
-        default_max_tokens = int(os.environ.get("MBPP_MAX_TOKENS", "8192"))
+        # Use MAX_TOKENS global, MBPP_MAX_TOKENS, passed max_tokens, or default to 8192
+        default_max_tokens = int(os.environ.get("MAX_TOKENS") or os.environ.get("MBPP_MAX_TOKENS", "8192"))
         self.max_tokens = max_tokens or default_max_tokens
         self.num_examples = num_examples
         self.start_idx = start_idx
