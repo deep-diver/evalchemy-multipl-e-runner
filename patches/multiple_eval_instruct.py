@@ -317,6 +317,16 @@ class MultipleBenchmark(BaseBenchmark):
                             ex_with_output["output"] = output
                             processed = extract_generation_code(ex_with_output, lang_code=lang)
 
+                            # Debug logging for first sample or when debug is enabled
+                            if self.debug or batch_start == 0 and instance.idx == batch_start:
+                                self.logger.info(f"[MULTIPLE-DEBUG] Sample: {sample_id}")
+                                self.logger.info(f"[MULTIPLE-DEBUG] Prompt (first 200 chars): {entry['prompt'][:200]}")
+                                self.logger.info(f"[MULTIPLE-DEBUG] Raw output length: {len(output)} chars")
+                                self.logger.info(f"[MULTIPLE-DEBUG] Raw output (first 300 chars): {output[:300]}")
+                                self.logger.info(f"[MULTIPLE-DEBUG] Processed code length: {len(processed) if processed else 0} chars")
+                                if processed:
+                                    self.logger.info(f"[MULTIPLE-DEBUG] Processed code (first 300 chars): {processed[:300]}")
+
                             entry["status"] = "success"
                             entry["result"] = processed
                             entry["error"] = None
@@ -326,6 +336,15 @@ class MultipleBenchmark(BaseBenchmark):
                             self.logger.info(f"✓ {sample_id} succeeded")
 
                         except Exception as e:
+                            # Log more details about the failure
+                            if self.debug or batch_start == 0 and instance.idx == batch_start:
+                                self.logger.info(f"[MULTIPLE-DEBUG] Sample: {sample_id}")
+                                self.logger.info(f"[MULTIPLE-DEBUG] Prompt (first 200 chars): {entry['prompt'][:200]}")
+                                self.logger.info(f"[MULTIPLE-DEBUG] Raw output length: {len(output)} chars")
+                                self.logger.info(f"[MULTIPLE-DEBUG] Raw output: {output}")
+                                self.logger.error(f"[MULTIPLE-DEBUG] Exception type: {type(e).__name__}")
+                                self.logger.error(f"[MULTIPLE-DEBUG] Exception traceback:", exc_info=True)
+
                             entry["status"] = "fail"
                             entry["error"] = str(e)
                             entry["timestamp"] = time.time()
@@ -452,6 +471,11 @@ class MultipleBenchmark(BaseBenchmark):
                     self.logger.warning(f"Generated file not found: {temp_file_path}")
                     continue
 
+                # Log sample count for debugging
+                with open(temp_file_path, "r") as f:
+                    sample_count = sum(1 for line in f if line.strip())
+                self.logger.info(f"[MULTIPLE-DEBUG] Evaluating {lang}: {sample_count} samples")
+
                 result = evaluate_functional_correctness(
                     input_file=temp_file_path,
                     tmp_dir=temp_dir,
@@ -464,7 +488,11 @@ class MultipleBenchmark(BaseBenchmark):
                 for metric, value in result.items():
                     evaluation_results[f"{lang}_{metric}"] = value
 
-                self.logger.info(f"Completed evaluation for {lang}")
+                # Log detailed results
+                pass_at_1 = result.get("pass@1", 0)
+                total = result.get("Total", sample_count)
+                correct = result.get("Correct", int(pass_at_1 * total))
+                self.logger.info(f"Completed evaluation for {lang}: pass@1={pass_at_1:.4f} ({correct}/{total})")
 
             except Exception as e:
                 self.logger.error(f"Error evaluating {lang}: {str(e)}")
